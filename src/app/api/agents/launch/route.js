@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { launch } from "@/lib/agents/runner";
+import { launch, getConfig } from "@/lib/agents/runner";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,9 @@ export async function POST(request) {
     let input;
     try {
       const body = await request.json();
-      input = body.config;
+      // Partial config (mis. hanya {task}) di-merge di atas config tersimpan —
+      // pengaturan harness/count/model/loop tetap dari awal, tinggal ganti prompt.
+      input = body.config ? { ...getConfig(), ...body.config } : undefined;
     } catch {
       input = undefined; // tanpa body = pakai config tersimpan
     }
