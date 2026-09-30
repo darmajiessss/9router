@@ -68,6 +68,20 @@ COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
 # node-machine-id is createRequire-loaded at runtime; tracing omits it.
 COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
 
+# --- agents-b (Opsi B): harness CLI layer. HARNESSES="" = tanpa harness.
+ARG NPM_REGISTRY
+ARG HARNESSES="opencode pi"
+RUN if [ -n "$HARNESSES" ]; then \
+      for h in $HARNESSES; do \
+        case "$h" in \
+          opencode) npm install -g opencode-ai --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
+          pi) npm install -g --ignore-scripts @earendil-works/pi-coding-agent --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
+          *) npm install -g --ignore-scripts "$h" --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
+        esac || exit 1; \
+      done; \
+    fi && \
+    mkdir -p /work && chown node:node /work
+
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
   ln -sf /app/data-home /root/.9router 2>/dev/null || true
