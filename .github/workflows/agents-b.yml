@@ -26,6 +26,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/darmajiessss/9router:agents-b
+            ghcr.io/darmajiessss/9router:latest
           build-args: |
             APP_VERSION=agents-b
           cache-from: type=gha

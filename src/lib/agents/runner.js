@@ -333,6 +333,22 @@ export function bootAgents() {
   try {
     const cfg = readJson(CONFIG_PATH, null);
     const state = readJson(STATE_PATH, null);
+    // AGENTS_BOOT=1: auto-launch sekali saat belum pernah launch (state kosong).
+    // Launch manual via dashboard/CLI tetap otoritatif — stop tak di-respawn
+    // karena bootAgents lama sudah menghormati flag stopped.
+    const neverLaunched = !state || !Array.isArray(state.slots) || !state.slots.length;
+    if (process.env.AGENTS_BOOT === "1" && neverLaunched) {
+      const c = getConfig();
+      const hasTask = c.taskMode === "slot"
+        ? c.tasks.some((t) => String(t || "").trim())
+        : String(c.task || "").trim();
+      if (hasTask) {
+        launch();
+        console.log("[agents] AGENTS_BOOT=1: auto-launch dari config tersimpan");
+        return;
+      }
+      console.log("[agents] AGENTS_BOOT=1 dilewati: task kosong");
+    }
     if (!cfg || !state || !Array.isArray(state.slots)) return;
     let dirty = false;
     for (const s of state.slots) {
