@@ -75,6 +75,16 @@ http.createServer = (...args) => {
   const server = origCreate(...rest, wrapped);
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
+    // agents-b: load instrumentation manually (custom server bypass Next lifecycle)
+    const instrPath = path.join(__dirname, ".next", "server", "instrumentation.js");
+    if (fs.existsSync(instrPath)) {
+      try {
+        const instr = require(instrPath);
+        if (instr.register) instr.register();
+      } catch (e) {
+        console.error("[custom-server] instrumentation load failed:", e?.message || e);
+      }
+    }
   });
   const origEmit = server.emit;
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
