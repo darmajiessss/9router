@@ -183,19 +183,34 @@ function isPidAlive(pid) {
   }
 }
 
+// SIGTERM dulu, lalu eskalasi SIGKILL bila proses_group masih hidup setelah 2 detik.
+// Tanpa eskalasi, harness yang menahan SIGTERM lolos dari stop() maupun rollback launch.
+const sleepMs = (ms) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
 function killGroup(pid) {
-  try {
-    process.kill(-pid, "SIGTERM");
-    return true;
-  } catch (e) {
-    if (e?.code === "ESRCH") return false;
+  const signal = (sig) => {
     try {
-      process.kill(pid, "SIGTERM");
+      process.kill(-pid, sig);
       return true;
-    } catch {
-      return false;
+    } catch (e) {
+      if (e?.code === "ESRCH") return false;
+      try {
+        process.kill(pid, sig);
+        return true;
+      } catch {
+        return false;
+      }
     }
+  };
+  if (!signal("SIGTERM")) return false;
+  for (let i = 0; i < 20; i++) {
+    if (!isPidAlive(pid)) return true;
+    sleepMs(100);
   }
+  signal("SIGKILL");
+  return !isPidAlive(pid);
 }
 
 function spawnSlot(cfg, n, model, task) {
@@ -226,6 +241,11 @@ function spawnSlot(cfg, n, model, task) {
     fs.closeSync(fd);
   }
   child.unref();
+  // Spawn gagal setelah spawn() kembali (mis. ENOENT) memunculkan event 'error';
+  // tanpa listener itu jadi uncaughtException yang menjatuhkan seluruh server.
+  child.on("error", (e) => {
+    console.error(`[agents] spawn slot ${n} error: ${e?.message || e}`);
+  });
   if (!child.pid) throw new Error(`gagal spawn slot ${n}`);
   return {
     n,
@@ -284,10 +304,17 @@ function stopLive(state, slotN) {
   for (const s of state.slots) {
     if (slotN && s.n !== slotN) continue;
     if (s.pid && isPidAlive(s.pid)) {
-      killGroup(s.pid);
-      stopped.push(s.n);
+      // Hanya tandai stopped kalau proses benar-benar mati; kalau kill gagal,
+      // biarkan stopped=false supaya bootAgents() masih punya kesempatan respawn.
+      if (killGroup(s.pid)) {
+        stopped.push(s.n);
+        s.stopped = true;
+      } else {
+        s.stopped = false;
+      }
+    } else {
+      s.stopped = true;
     }
-    s.stopped = true;
   }
   return stopped;
 }
@@ -319,6 +346,10 @@ export function launch(configInput) {
   } catch (err) {
     // Spawn gagal di tengah: matikan slot yang sudah hidup supaya tak jadi yatim.
     for (const s of slots) killGroup(s.pid);
+    // stopLive() hanya memutasi state di memori. Kalau tak dipersistakan, state.json
+    // masih berisi pid lama yang sudah mati dengan stopped:false, sehingga
+    // bootAgents() me-respawn ulang dari config lama -> proses yatim. Tandai stopped.
+    if (prev) writeJson(STATE_PATH, { ...prev, slots: prev.slots.map((s) => ({ ...s, stopped: true })) });
     throw err;
   }
   // Config baru hanya disimpan setelah semua slot benar-benar hidup.
