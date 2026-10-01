@@ -80,7 +80,9 @@ http.createServer = (...args) => {
     if (fs.existsSync(instrPath)) {
       try {
         const instr = require(instrPath);
-        if (instr.register) instr.register();
+        // register() async: tanpa .catch() penolakan promise jadi unhandledRejection
+        // -> proses mati setelah listening -> crash-loop (restart: always).
+        if (instr.register) Promise.resolve(instr.register()).catch((e) => console.error("[custom-server] instrumentation register failed:", e?.message || e));
       } catch (e) {
         console.error("[custom-server] instrumentation load failed:", e?.message || e);
       }

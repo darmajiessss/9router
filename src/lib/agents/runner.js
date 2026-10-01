@@ -300,15 +300,29 @@ export function launch(configInput) {
     throw new Error("task kosong");
   }
   ensureHarnessHome(cfg);
-  saveConfig(cfg);
-  const prev = readJson(STATE_PATH, null);
-  if (prev) stopLive(prev);
-  const slots = [];
+  // Validasi SEMUA task slot dalam satu pass sebelum merusak apa pun: dulu
+  // saveConfig + stopLive jalan duluan, jadi 1 slot kosong -> proses yatim tanpa
+  // pid tercatat (tak bisa di-stop, loop tetap bakar kuota) atau nol agent.
+  const slotTasks = [];
   for (let i = 0; i < cfg.count; i++) {
     const task = taskFor(cfg, i).trim();
     if (!task) throw new Error(`task slot ${i + 1} kosong`);
-    slots.push(spawnSlot(cfg, i + 1, cfg.models[i % cfg.models.length], task));
+    slotTasks.push(task);
   }
+  const prev = readJson(STATE_PATH, null);
+  if (prev) stopLive(prev);
+  const slots = [];
+  try {
+    for (let i = 0; i < cfg.count; i++) {
+      slots.push(spawnSlot(cfg, i + 1, cfg.models[i % cfg.models.length], slotTasks[i]));
+    }
+  } catch (err) {
+    // Spawn gagal di tengah: matikan slot yang sudah hidup supaya tak jadi yatim.
+    for (const s of slots) killGroup(s.pid);
+    throw err;
+  }
+  // Config baru hanya disimpan setelah semua slot benar-benar hidup.
+  saveConfig(cfg);
   const state = { launchedAt: new Date().toISOString(), loop: cfg.loop, harness: cfg.harness, slots };
   writeJson(STATE_PATH, state);
   return getState();
