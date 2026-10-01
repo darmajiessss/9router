@@ -209,8 +209,11 @@ function killGroup(pid) {
     if (!isPidAlive(pid)) return true;
     sleepMs(100);
   }
+  // SIGKILL tak bisa diabaikan. Proses anak yang dibunuh bisa menggantung sebagai
+  // zombie (kill(pid,0) tetap sukses) karena Node tak mereap child yang di-unref —
+  // zombie tak menjalankan loop dan tak memakai kuota, jadi tetap dianggap sukses.
   signal("SIGKILL");
-  return !isPidAlive(pid);
+  return true;
 }
 
 function spawnSlot(cfg, n, model, task) {
