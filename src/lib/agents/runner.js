@@ -124,6 +124,13 @@ function ensureHarnessHome(cfg) {
     path.join(HOME_DIR, ".config", "opencode", "opencode.json"),
     JSON.stringify(
       {
+        // Headless: tak ada UI untuk "ask" → auto-reject. Izinkan baca tulis
+        // lintas folder di /work (orchestrator <-> worker inbox) + buang
+        // doom_loop guard (retry sah di loop).
+        permission: {
+          external_directory: { "/work/**": "allow" },
+          doom_loop: "allow",
+        },
         provider: {
           "9router": {
             npm: "@ai-sdk/openai-compatible",
