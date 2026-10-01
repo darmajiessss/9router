@@ -72,6 +72,7 @@ COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machin
 ARG NPM_REGISTRY
 ARG HARNESSES="opencode pi"
 RUN if [ -n "$HARNESSES" ]; then \
+      apk add --no-cache bash && \
       for h in $HARNESSES; do \
         case "$h" in \
           opencode) npm install -g opencode-ai --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
