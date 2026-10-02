@@ -222,6 +222,9 @@ function procStart(pid) {
   }
 }
 
+// isPidAlive dipanggil tiap polling dashboard; mismatch tak boleh jadi spam log.
+const warnedPidMismatch = new Set();
+
 function isPidAlive(pid, expectStart) {
   if (!pid) return false;
   try {
@@ -234,7 +237,10 @@ function isPidAlive(pid, expectStart) {
   const cur = procStart(pid);
   if (cur === null) return false;
   if (cur !== String(expectStart)) {
-    console.warn(`[agents] pid ${pid} tidak cocok dengan starttime terekam (pid reuse?) -> dianggap mati`);
+    if (!warnedPidMismatch.has(pid)) {
+      warnedPidMismatch.add(pid);
+      console.warn(`[agents] pid ${pid} tidak cocok dengan starttime terekam (pid reuse?) -> dianggap mati`);
+    }
     return false;
   }
   return true;
@@ -397,6 +403,11 @@ function stopLive(state, slotN) {
   for (const s of state.slots) {
     if (slotN && s.n !== slotN) continue;
     if (s.pid && isPidAlive(s.pid, s.procStart)) {
+      // Tanpa token starttime, pid tak bisa dipastikan milik wrapper slot ini;
+      // stop() tetap jalankan (permintaan eksplisit user) tapi catat risikonya.
+      if (HAS_PROC && !s.procStart) {
+        console.warn(`[agents] stop slot ${s.n}: pid ${s.pid} tanpa starttime terekam, kill tanpa verifikasi identitas`);
+      }
       // Hanya tandai stopped kalau proses benar-benar mati; kalau kill gagal,
       // biarkan stopped=false supaya bootAgents() masih punya kesempatan respawn.
       if (killGroup(s.pid)) {
@@ -525,7 +536,15 @@ export function bootAgents() {
     }
     let dirty = false;
     for (const s of state.slots) {
-      if (s.stopped || (s.pid && isPidAlive(s.pid, s.procStart))) continue;
+      // Entry state dari versi lama belum punya starttime -> pid-nya tak
+      // terverifikasi (bisa milik proses lain setelah container restart).
+      // Respawn sekali supaya token tercatat; proses asing tak disentuh karena
+      // di sini kita hanya spawn wrapper baru, tidak kill apa pun.
+      const unverified = !!s.pid && HAS_PROC && !s.procStart;
+      if (unverified) {
+        console.warn(`[agents] slot ${s.n} tanpa starttime terekam (state versi lama) -> respawn sekali untuk mencatat identitas`);
+      }
+      if (s.stopped || (s.pid && !unverified && isPidAlive(s.pid, s.procStart))) continue;
       if (!loopOn) {
         if (s.pid) {
           s.pid = null;
