@@ -29,6 +29,9 @@ const DEFAULT_CONFIG = {
 const WRAP_SH = `#!/bin/sh
 LOG="$1"; OKD="$2"; FAILD="$3"; LOOP="$4"; shift 4
 K=1
+# Marker boot: bedakan iterasi boot ini dari sisa log boot sebelumnya
+# (log dirotasi per-spawn, tapi file tetap bisa di-append sebelum rotasi).
+printf '[boot %s pid=%s]\\n' "$(date -u +%FT%TZ)" "$$" >> "$LOG"
 while :; do
   printf '[gen-%s start %s]\\n' "$K" "$(date -u +%FT%TZ)" >> "$LOG"
   "$@" >> "$LOG" 2>&1
@@ -43,6 +46,9 @@ done
 const BASE_URL = process.env.AGENTS_BASE_URL || "http://localhost:20128/v1";
 const CONTEXT_LIMIT = 200000;
 const OUTPUT_LIMIT = 16384;
+// Batas log per slot sebelum dirotasi (aktif + 1 .prev). Volume data dipakai app
+// juga, jadi log tak boleh tumbuh tanpa batas.
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -195,13 +201,43 @@ function commandFor(harness, task, model, workDir) {
   return ["opencode", "run", "-m", `9router/${model}`, "--dir", workDir, "--", task];
 }
 
-function isPidAlive(pid) {
+// Identitas proses: starttime dari /proc/<pid>/stat (field 22). pid di state.json
+// berasal dari container sebelumnya; tanpa cek ini pid yang sudah dipakai proses
+// lain dianggap slot hidup (status "running" palsu) dan stop() bisa membunuh
+// process group orang. Tanpa /proc (host non-Linux) -> verifikasi dilewati.
+const HAS_PROC = fs.existsSync("/proc/self/stat");
+
+function procStart(pid) {
+  if (!HAS_PROC || !pid) return null;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    // comm (field 2) bisa berisi spasi dan tanda kurung -> potong dari ')' terakhir.
+    const close = stat.lastIndexOf(")");
+    if (close < 0) return null;
+    // Setelah ")" mulai field 3; starttime = field 22 -> indeks 19.
+    const starttime = stat.slice(close + 2).trim().split(/\s+/)[19];
+    return starttime || null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid, expectStart) {
+  if (!pid) return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch (e) {
-    return e?.code === "EPERM";
+    if (e?.code !== "EPERM") return false;
   }
+  // Hanya bisa diverifikasi bila ada token starttime terekam DAN /proc ada.
+  if (!expectStart || !HAS_PROC) return true;
+  const cur = procStart(pid);
+  if (cur === null) return false;
+  if (cur !== String(expectStart)) {
+    console.warn(`[agents] pid ${pid} tidak cocok dengan starttime terekam (pid reuse?) -> dianggap mati`);
+    return false;
+  }
+  return true;
 }
 
 // SIGTERM dulu, lalu eskalasi SIGKILL bila proses_group masih hidup setelah 2 detik.
@@ -273,6 +309,17 @@ function spawnSlot(cfg, n, model, task) {
     cfg.loop ? "1" : "0",
     ...commandFor(cfg.harness, task, model, workDir),
   ];
+  // Log di-append tanpa batas -> volume data (dipakai app juga) bisa penuh.
+  // Rotasi sekali saat spawn: aktif + satu .prev (5MB x 2 x 5 slot = maks 50MB).
+  try {
+    const st = fs.statSync(logPath);
+    if (st.size > MAX_LOG_BYTES) {
+      fs.renameSync(logPath, `${logPath}.prev`);
+      console.log(`[agents] rotasi log ${path.basename(logPath)} (${Math.round(st.size / 1024)}KB -> .prev)`);
+    }
+  } catch {
+    /* belum ada */
+  }
   const fd = fs.openSync(logPath, "a");
   let child;
   try {
@@ -301,6 +348,7 @@ function spawnSlot(cfg, n, model, task) {
     log: logPath,
     work: workDir,
     startedAt: new Date().toISOString(),
+    procStart: procStart(child.pid),
     stopped: false,
   };
 }
@@ -324,7 +372,7 @@ function tail(p, bytes = 4096) {
 }
 
 function decorate(s) {
-  const alive = s.pid ? isPidAlive(s.pid) : false;
+  const alive = s.pid ? isPidAlive(s.pid, s.procStart) : false;
   const t = tail(s.log || "");
   const genMatches = [...t.matchAll(/gen-(\d+) (?:start|exit)/g)];
   const exitMatches = [...t.matchAll(/gen-(\d+) exit=(-?\d+)/g)];
@@ -348,7 +396,7 @@ function stopLive(state, slotN) {
   const stopped = [];
   for (const s of state.slots) {
     if (slotN && s.n !== slotN) continue;
-    if (s.pid && isPidAlive(s.pid)) {
+    if (s.pid && isPidAlive(s.pid, s.procStart)) {
       // Hanya tandai stopped kalau proses benar-benar mati; kalau kill gagal,
       // biarkan stopped=false supaya bootAgents() masih punya kesempatan respawn.
       if (killGroup(s.pid)) {
@@ -414,14 +462,21 @@ export function stop(slotN) {
 
 export function readLog(slotN, bytes = 65536) {
   const p = path.join(AGENTS_DIR, `run-${slotN}.log`);
-  const st = (() => {
+  const sizeOf = (f) => {
     try {
-      return fs.statSync(p).size;
+      return fs.statSync(f).size;
     } catch {
       return 0;
     }
-  })();
-  return { slot: slotN, size: st, log: tail(p, Math.min(bytes, 262144)) };
+  };
+  const cap = Math.min(bytes, 262144);
+  const size = sizeOf(p);
+  if (size > 0) return { slot: slotN, size, log: tail(p, cap) };
+  // Log aktif baru dirotasi/spawn ulang dan belum berisi apa-apa -> tampilkan
+  // arsip lama supaya UI tak kosong, dengan penanda rotated.
+  const prev = `${p}.prev`;
+  const prevSize = sizeOf(prev);
+  return { slot: slotN, size: prevSize, log: prevSize ? tail(prev, cap) : "", rotated: true };
 }
 
 // Dipanggil instrumentation.js saat server boot: bersihkan pid mati +
@@ -470,7 +525,7 @@ export function bootAgents() {
     }
     let dirty = false;
     for (const s of state.slots) {
-      if (s.stopped || (s.pid && isPidAlive(s.pid))) continue;
+      if (s.stopped || (s.pid && isPidAlive(s.pid, s.procStart))) continue;
       if (!loopOn) {
         if (s.pid) {
           s.pid = null;
