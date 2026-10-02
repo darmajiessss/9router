@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card } from "@/shared/components";
 
 const HARNESS_OPTIONS = ["opencode", "pi"];
@@ -31,6 +31,7 @@ export default function AgentsPage() {
   const [busy, setBusy] = useState(false);
   const [logSlot, setLogSlot] = useState(null);
   const [logText, setLogText] = useState("");
+  const logSlotWanted = useRef(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -80,12 +81,21 @@ export default function AgentsPage() {
   const showLog = async (n) => {
     setLogSlot(n);
     setLogText("memuat...");
+    // Slot yang sedang diminta: respons log yang telat (slot lama) tak boleh
+    // menimpa tampilan slot yang baru diklik.
+    logSlotWanted.current = n;
     try {
-      const res = await fetch(`/api/agents/log?slot=${n}`);
-      const d = await res.json();
-      setLogText(d.log || "(log kosong)");
+      const res = await fetch(`/api/agents/log?slot=${n}`, { cache: "no-store" });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || res.statusText);
+      if (logSlotWanted.current !== n) return;
+      setLogText(
+        d.log ||
+          (d.rotated ? "(log aktif masih kosong; menampilkan arsip .prev)" : "(log kosong)"),
+      );
     } catch (e) {
-      setLogText(String(e));
+      if (logSlotWanted.current !== n) return;
+      setLogText(String(e?.message || e));
     }
   };
 
@@ -100,7 +110,9 @@ export default function AgentsPage() {
   }
 
   const patch = (p) => setConfig((c) => ({ ...c, ...p }));
-  const slotCount = config.count;
+  // Clamp di UI: input "9999" sempat render ribuan input slot sebelum server
+  // menolak (sanitizeConfig clamp ke 5).
+  const slotCount = Math.min(5, Math.max(1, Number(config.count) || 1));
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -165,7 +177,7 @@ export default function AgentsPage() {
               min="1"
               max="5"
               value={slotCount}
-              onChange={(e) => patch({ count: Number(e.target.value) })}
+              onChange={(e) => patch({ count: Math.min(5, Math.max(1, Number(e.target.value) || 1)) })}
               className={inputCls}
             />
           </label>

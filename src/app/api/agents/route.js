@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getConfig, getState, sanitizeConfig, saveConfig } from "@/lib/agents/runner";
+import { agentsErrorResponse } from "@/lib/agents/http";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,6 @@ export async function POST(request) {
     saveConfig(cfg);
     return NextResponse.json({ config: cfg });
   } catch (error) {
-    return NextResponse.json({ error: String(error?.message || error) }, { status: 400 });
+    return agentsErrorResponse(error, "config");
   }
 }

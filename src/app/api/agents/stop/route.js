@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { stop } from "@/lib/agents/runner";
+import { agentsErrorResponse } from "@/lib/agents/http";
 
 export const dynamic = "force-dynamic";
 
@@ -13,10 +14,19 @@ export async function POST(request) {
     } catch {
       slot = undefined;
     }
-    const result = stop(slot ? Number(slot) : undefined);
+    // Slot tak Given = semua slot (memang tujuannya). Slot yang diberikan tapi
+    // bukan integer 1-5 (null/NaN/"abc") dulu jadi falsy -> semua slot mati
+    // karena kesalahanSepele. Validasi sama seperti /api/agents/log.
+    let n;
+    if (slot !== undefined && slot !== null) {
+      n = Number(slot);
+      if (!Number.isInteger(n) || n < 1 || n > 5) {
+        return NextResponse.json({ error: "slot 1-5" }, { status: 400 });
+      }
+    }
+    const result = stop(n);
     return NextResponse.json(result);
   } catch (error) {
-    console.log("agents stop error:", error);
-    return NextResponse.json({ error: String(error?.message || error) }, { status: 400 });
+    return agentsErrorResponse(error, "stop");
   }
 }

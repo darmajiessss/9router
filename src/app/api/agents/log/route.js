@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readLog } from "@/lib/agents/runner";
+import { agentsErrorResponse } from "@/lib/agents/http";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,6 @@ export async function GET(request) {
     }
     return NextResponse.json(readLog(slot));
   } catch (error) {
-    return NextResponse.json({ error: String(error?.message || error) }, { status: 400 });
+    return agentsErrorResponse(error, "log");
   }
 }

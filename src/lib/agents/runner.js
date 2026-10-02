@@ -120,9 +120,31 @@ export function saveConfig(cfg) {
 // dipisahkan "--" di commandFor(). Task boleh dimulai "-", model tidak.
 const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.\-/]*$/;
 
+// Error validasi (400) vs error internal (500). Tanpa ini semua error jadi 400
+// dan pesan mentah membocorkan path filesystem ke klien.
+export function validationError(message) {
+  const e = new Error(message);
+  e.status = 400;
+  return e;
+}
+
 export function sanitizeConfig(input) {
-  const c = { ...DEFAULT_CONFIG, ...(input || {}) };
-  if (!HARNESS_IDS.includes(c.harness)) throw new Error(`harness harus salah satu: ${HARNESS_IDS.join("|")}`);
+  const raw = input || {};
+  // Whitelist per-field: key asing di body.config tak ikut nyangkut permanen di
+  // config.json (spread {...input}-take everything pernah menyimpan apa saja).
+  const c = {
+    ...DEFAULT_CONFIG,
+    ...(HARNESS_IDS.includes(raw.harness) ? { harness: raw.harness } : {}),
+    count: raw.count,
+    loop: raw.loop,
+    taskMode: raw.taskMode,
+    task: raw.task,
+    tasks: raw.tasks,
+    models: raw.models,
+  };
+  if (raw.harness !== undefined && !HARNESS_IDS.includes(raw.harness)) {
+    throw validationError(`harness harus salah satu: ${HARNESS_IDS.join("|")}`);
+  }
   c.count = Math.min(5, Math.max(1, parseInt(c.count, 10) || 1));
   c.loop = !!c.loop;
   c.taskMode = c.taskMode === "slot" ? "slot" : "shared";
@@ -458,9 +480,9 @@ function stopLive(state, slotN) {
 // Launch selalu restart: slot hidup dimatikan dulu supaya tak dobel.
 export function launch(configInput) {
   const cfg = sanitizeConfig(configInput === undefined ? getConfig() : configInput);
-  if (!String(cfg.task || "").trim() && cfg.taskMode === "shared") throw new Error("task kosong");
+  if (!String(cfg.task || "").trim() && cfg.taskMode === "shared") throw validationError("task kosong");
   if (cfg.taskMode === "slot" && !cfg.task.trim() && cfg.tasks.every((t) => !String(t || "").trim())) {
-    throw new Error("task kosong");
+    throw validationError("task kosong");
   }
   ensureHarnessHome(cfg);
   // Validasi SEMUA task slot dalam satu pass sebelum merusak apa pun: dulu
@@ -469,7 +491,7 @@ export function launch(configInput) {
   const slotTasks = [];
   for (let i = 0; i < cfg.count; i++) {
     const task = taskFor(cfg, i).trim();
-    if (!task) throw new Error(`task slot ${i + 1} kosong`);
+    if (!task) throw validationError(`task slot ${i + 1} kosong`);
     slotTasks.push(task);
   }
   const prev = readJson(STATE_PATH, null);

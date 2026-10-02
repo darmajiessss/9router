@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { launch, getConfig } from "@/lib/agents/runner";
+import { agentsErrorResponse } from "@/lib/agents/http";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,6 @@ export async function POST(request) {
     const state = launch(input);
     return NextResponse.json({ state });
   } catch (error) {
-    console.log("agents launch error:", error);
-    return NextResponse.json({ error: String(error?.message || error) }, { status: 400 });
+    return agentsErrorResponse(error, "launch");
   }
 }
