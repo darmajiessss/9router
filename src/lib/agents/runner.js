@@ -27,8 +27,8 @@ const DEFAULT_CONFIG = {
 // Wrapper per slot: loop + penanda gen. Dijalankan detached (session leader)
 // sehingga Stop = kill group (-pid) mematikan loop beserta anaknya.
 const WRAP_SH = `#!/bin/sh
-LOG="$1"; OKD="$2"; FAILD="$3"; LOOP="$4"; shift 4
-K=1
+LOG="$1"; OKD="$2"; FAILD="$3"; LOOP="$4"; K0="$5"; shift 5
+K=$((K0 + 1))
 # Marker boot: bedakan iterasi boot ini dari sisa log boot sebelumnya
 # (log dirotasi per-spawn, tapi file tetap bisa di-append sebelum rotasi).
 printf '[boot %s pid=%s]\\n' "$(date -u +%FT%TZ)" "$$" >> "$LOG"
@@ -50,8 +50,8 @@ const OUTPUT_LIMIT = 16384;
 // juga, jadi log tak boleh tumbuh tanpa batas.
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
-function ensureDir(p) {
-  fs.mkdirSync(p, { recursive: true });
+function ensureDir(p, mode) {
+  fs.mkdirSync(p, { recursive: true, ...(mode ? { mode } : {}) });
 }
 
 function readJson(p, fallback) {
@@ -90,7 +90,9 @@ function writeIfChanged(p, content) {
   } catch {
     /* belum ada */
   }
-  fs.writeFileSync(p, content);
+  // 0o600: file ini berisi AGENTS_API_KEY. Mode berlaku saat file dibuat —
+  // file lama yang sudah ada tak diubah (jarang, isinya ikut berubah).
+  fs.writeFileSync(p, content, { mode: 0o600 });
 }
 
 export function getConfig() {
@@ -143,7 +145,7 @@ function workRoot() {
 function ensureHarnessHome(cfg) {
   const apiKey = process.env.AGENTS_API_KEY;
   if (!apiKey) throw new Error("AGENTS_API_KEY belum di-set di environment container");
-  ensureDir(HOME_DIR);
+  ensureDir(HOME_DIR, 0o700);
   writeIfChanged(
     path.join(HOME_DIR, ".config", "opencode", "opencode.json"),
     JSON.stringify(
@@ -313,6 +315,7 @@ function spawnSlot(cfg, n, model, task) {
     "5", // delay antar iterasi saat sukses (detik)
     "30", // backoff saat gagal (detik)
     cfg.loop ? "1" : "0",
+    String(lastGen(logPath)), // K0: counter lanjut, bukan reset ke 1 tiap respawn
     ...commandFor(cfg.harness, task, model, workDir),
   ];
   // Log di-append tanpa batas -> volume data (dipakai app juga) bisa penuh.
@@ -367,19 +370,34 @@ function tail(p, bytes = 4096) {
     const fd = fs.openSync(p, "r");
     const buf = Buffer.alloc(size);
     try {
-      fs.readSync(fd, buf, 0, size, st.size - size);
+      // only byte yang benar-benar terbaca: sisa buffer tak boleh ikut jadi
+      // NUL, dan memotong di tengah karakter multi-byte bikin "�" di UI.
+      const n = fs.readSync(fd, buf, 0, size, st.size - size);
+      return buf.subarray(0, n).toString("utf8");
     } finally {
       fs.closeSync(fd);
     }
-    return buf.toString("utf8");
   } catch {
     return "";
   }
 }
 
+// Nomor generasi jangan mundur ke 1 tiap respawn: lanjut dari marker terakhir
+// di log (aktif + .prev, karena log dirotasi saat spawn).
+// ponytail: format marker internal, bukan input user — teks task yang memuat
+// "[gen-99 " bisa bikin lompatan; kalau terasa, pakai marker ber-padding.
+function lastGen(logPath) {
+  const txt = tail(logPath, 65536) + tail(`${logPath}.prev`, 65536);
+  let max = 0;
+  for (const m of txt.matchAll(/\[gen-(\d+) /g)) max = Math.max(max, Number(m[1]));
+  return max;
+}
+
 function decorate(s) {
   const alive = s.pid ? isPidAlive(s.pid, s.procStart) : false;
-  const t = tail(s.log || "");
+  // 64KB bukan 4KB: satu iterasi harness sering >4KB output sehingga marker
+  // `exit=` tergeser keluar dan status meleset jadi unknown/failed.
+  const t = tail(s.log || "", 65536);
   const genMatches = [...t.matchAll(/gen-(\d+) (?:start|exit)/g)];
   const exitMatches = [...t.matchAll(/gen-(\d+) exit=(-?\d+)/g)];
   const gen = genMatches.length ? Number(genMatches[genMatches.length - 1][1]) : 0;
