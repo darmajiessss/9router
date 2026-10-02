@@ -51,14 +51,30 @@ function ensureDir(p) {
 function readJson(p, fallback) {
   try {
     return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
+  } catch (e) {
+    // ENOENT = belum ada (wajar, pakai fallback). Selain itu file korup —
+    // jangan sunyi, biar tahu state/config tertulis terpotong.
+    if (e?.code !== "ENOENT") console.warn(`[agents] file korup ${p}: ${e?.message || e}`);
     return fallback;
   }
 }
 
 function writeJson(p, v) {
   ensureDir(path.dirname(p));
-  fs.writeFileSync(p, JSON.stringify(v, null, 2));
+  // Tulis ke .tmp dulu lalu rename (atomic di POSIX): pembaca tak pernah
+  // menangkap JSON terpotong akibat proses mati di tengah write.
+  const tmp = `${p}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(v, null, 2));
+  fs.renameSync(tmp, p);
+}
+
+function fileExists(p) {
+  try {
+    fs.accessSync(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function writeIfChanged(p, content) {
@@ -79,7 +95,9 @@ export function saveConfig(cfg) {
   writeJson(CONFIG_PATH, cfg);
 }
 
-const SAFE_MODEL_RE = /^[a-zA-Z0-9_.\-/]+$/;
+// Tolak "-" di depan: nilai model masuk sebagai argumen flag (-m/--model), task
+// dipisahkan "--" di commandFor(). Task boleh dimulai "-", model tidak.
+const SAFE_MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.\-/]*$/;
 
 export function sanitizeConfig(input) {
   const c = { ...DEFAULT_CONFIG, ...(input || {}) };
@@ -167,11 +185,14 @@ function ensureHarnessHome(cfg) {
 }
 
 // Bentuk argumen = persis pola yang tervalidasi di Phase 0 spike (Alpine).
+// "--" di depan task: opsi (-m, --dir, --model) diurutkan dulu, baru pemisah,
+// supaya task berawalan "-" tak dibaca harness sebagai flag (sudah diuji: kedua
+// harness menerimanya sebagai prompt).
 function commandFor(harness, task, model, workDir) {
   if (harness === "pi") {
-    return ["pi", "-p", "--no-session", "--provider", "9router", "--model", model, task];
+    return ["pi", "-p", "--no-session", "--provider", "9router", "--model", model, "--", task];
   }
-  return ["opencode", "run", "-m", `9router/${model}`, task, "--dir", workDir];
+  return ["opencode", "run", "-m", `9router/${model}`, "--dir", workDir, "--", task];
 }
 
 function isPidAlive(pid) {
@@ -214,6 +235,27 @@ function killGroup(pid) {
   // zombie tak menjalankan loop dan tak memakai kuota, jadi tetap dianggap sukses.
   signal("SIGKILL");
   return true;
+}
+
+// Bunuh wrapper yatim dengan memindai /proc (cmdline berisi path wrap.sh).
+// Dipakai jalur boot bersih setelah state.json di-quarantine: proses lama tak
+// diketahui pid-nya, tapi path wrapper unik. Tanpa /proc (host non-Linux) -> lewati.
+function killStrayWrappers() {
+  if (!fs.existsSync("/proc")) return 0;
+  const victims = [];
+  for (const name of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(name)) continue;
+    let cmd = "";
+    try {
+      cmd = fs.readFileSync(`/proc/${name}/cmdline`, "utf8");
+    } catch {
+      continue;
+    }
+    if (cmd.includes(WRAP_PATH)) victims.push(Number(name));
+  }
+  for (const pid of victims) killGroup(pid);
+  if (victims.length) console.warn(`[agents] ${victims.length} wrapper yatim dimatikan (boot bersih)`);
+  return victims.length;
 }
 
 function spawnSlot(cfg, n, model, task) {
@@ -387,12 +429,27 @@ export function readLog(slotN, bytes = 65536) {
 export function bootAgents() {
   try {
     const cfg = readJson(CONFIG_PATH, null);
-    const state = readJson(STATE_PATH, null);
+    let state = readJson(STATE_PATH, null);
+    let bootBersih = false;
+    // state.json korup (bukan "belum ada"): arsipkan, matikan wrapper yatim,
+    // lalu jalankan auto-launch seperti boot pertama. Tanpa langkah ini
+    // state korup -> neverLaunched -> auto-launch ganda dengan wrapper lama.
+    if (!state && fileExists(STATE_PATH)) {
+      bootBersih = true;
+      killStrayWrappers();
+      try {
+        fs.renameSync(STATE_PATH, `${STATE_PATH}.corrupt`);
+        console.error(`[agents] state.json korup -> boot bersih (arsip: ${STATE_PATH}.corrupt)`);
+      } catch (e) {
+        console.error(`[agents] state.json korup dan gagal diarsipkan: ${e?.message || e}`);
+      }
+      state = null;
+    }
     // AGENTS_BOOT=1: auto-launch sekali saat belum pernah launch (state kosong).
     // Launch manual via dashboard/CLI tetap otoritatif — stop tak di-respawn
     // karena bootAgents lama sudah menghormati flag stopped.
     const neverLaunched = !state || !Array.isArray(state.slots) || !state.slots.length;
-    if (process.env.AGENTS_BOOT === "1" && neverLaunched) {
+    if ((process.env.AGENTS_BOOT === "1" || bootBersih) && neverLaunched) {
       const c = getConfig();
       const hasTask = c.taskMode === "slot"
         ? c.tasks.some((t) => String(t || "").trim())
@@ -405,10 +462,16 @@ export function bootAgents() {
       console.log("[agents] AGENTS_BOOT=1 dilewati: task kosong");
     }
     if (!cfg || !state || !Array.isArray(state.slots)) return;
+    // Sumber kebenaran respawn: state.loop (hasil launch terakhir), bukan
+    // cfg.loop mentah — user bisa menyimpan loop:false tanpa relaunch.
+    const loopOn = typeof state.loop === "boolean" ? state.loop : !!cfg.loop;
+    if (loopOn !== !!cfg.loop) {
+      console.log(`[agents] respawn memakai state.loop=${loopOn} (cfg.loop=${!!cfg.loop} diabaikan)`);
+    }
     let dirty = false;
     for (const s of state.slots) {
       if (s.stopped || (s.pid && isPidAlive(s.pid))) continue;
-      if (!cfg.loop) {
+      if (!loopOn) {
         if (s.pid) {
           s.pid = null;
           dirty = true;
