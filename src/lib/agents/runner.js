@@ -86,13 +86,26 @@ function fileExists(p) {
 function writeIfChanged(p, content) {
   ensureDir(path.dirname(p));
   try {
-    if (fs.readFileSync(p, "utf8") === content) return;
+    if (fs.readFileSync(p, "utf8") === content) {
+      tighten(p, 0o600);
+      return;
+    }
   } catch {
     /* belum ada */
   }
-  // 0o600: file ini berisi AGENTS_API_KEY. Mode berlaku saat file dibuat —
-  // file lama yang sudah ada tak diubah (jarang, isinya ikut berubah).
   fs.writeFileSync(p, content, { mode: 0o600 });
+  tighten(p, 0o600);
+}
+
+// File harness ini berisi AGENTS_API_KEY. { mode } di writeFileSync masih ikut
+// umask (022 -> 644) dan tak berlaku untuk file yang sudah ada, jadi rapatkan
+// lewat chmod setelah tulis maupun saat isinya tak berubah.
+function tighten(p, mode) {
+  try {
+    fs.chmodSync(p, mode);
+  } catch {
+    /* volume tak dukung chmod: bukan alasan gagalkan start */
+  }
 }
 
 export function getConfig() {
@@ -146,6 +159,7 @@ function ensureHarnessHome(cfg) {
   const apiKey = process.env.AGENTS_API_KEY;
   if (!apiKey) throw new Error("AGENTS_API_KEY belum di-set di environment container");
   ensureDir(HOME_DIR, 0o700);
+tighten(HOME_DIR, 0o700);
   writeIfChanged(
     path.join(HOME_DIR, ".config", "opencode", "opencode.json"),
     JSON.stringify(
