@@ -18,7 +18,7 @@ export async function POST(request) {
     // bukan integer 1-5 (null/NaN/"abc") dulu jadi falsy -> semua slot mati
     // karena kesalahanSepele. Validasi sama seperti /api/agents/log.
     let n;
-    if (slot !== undefined && slot !== null) {
+    if (slot !== undefined) {
       n = Number(slot);
       if (!Number.isInteger(n) || n < 1 || n > 5) {
         return NextResponse.json({ error: "slot 1-5" }, { status: 400 });

@@ -75,9 +75,9 @@ RUN if [ -n "$HARNESSES" ]; then \
       apk add --no-cache bash && \
       for h in $HARNESSES; do \
         case "$h" in \
-          opencode) npm install -g opencode-ai --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
-          pi) npm install -g --ignore-scripts @earendil-works/pi-coding-agent --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
-          *) npm install -g --ignore-scripts "$h" --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
+          opencode) npm install -g opencode-ai@1.18.34 --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
+          pi) npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0 --registry="$NPM_REGISTRY" --fetch-retries=3 ;; \
+          *) echo "harness tidak dikenal: $h" >&2; exit 1 ;; \
         esac || exit 1; \
       done; \
     fi && \
@@ -90,7 +90,7 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
 # Avoid a full distribution upgrade in the runtime image. It makes builds less
 # reproducible and is unrelated to installing the runtime entrypoint helper.
 RUN apk add --no-cache su-exec && \
-  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
+  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home /work 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
   chmod +x /entrypoint.sh
 
 EXPOSE 20128

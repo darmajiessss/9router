@@ -366,12 +366,16 @@ function spawnSlot(cfg, n, model, task) {
     /* belum ada */
   }
   const fd = fs.openSync(logPath, "a");
+  const childEnv = { ...process.env, HOME: HOME_DIR };
+  // Token peer hanya buat header internal server; proses anak tak membutuhkannya
+  // dan env diwarisi utuh tanpa penyaringan.
+  delete childEnv.NINEROUTER_PEER_TOKEN;
   let child;
   try {
     child = spawn("sh", args, {
       detached: true,
       stdio: ["ignore", fd, fd],
-      env: { ...process.env, HOME: HOME_DIR },
+      env: childEnv,
       cwd: workDir,
     });
   } finally {
