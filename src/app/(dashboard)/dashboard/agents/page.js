@@ -26,11 +26,14 @@ const inputCls =
 
 export default function AgentsPage() {
   const [config, setConfig] = useState(null);
+  const [serverConfig, setServerConfig] = useState(null);
   const [state, setState] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [logSlot, setLogSlot] = useState(null);
   const [logText, setLogText] = useState("");
+  const [logSize, setLogSize] = useState("");
+  const [logRotated, setLogRotated] = useState(false);
   const logSlotWanted = useRef(null);
 
   const refresh = useCallback(async () => {
@@ -39,6 +42,7 @@ export default function AgentsPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       setConfig((prev) => prev ?? data.config);
+      setServerConfig(data.config);
       setState(data.state);
       setError("");
     } catch (e) {
@@ -51,9 +55,11 @@ export default function AgentsPage() {
   }, [refresh]);
 
   const running = !!state?.slots?.some((s) => s.status === "running");
+  // Polling tak berhenti saat idle (dulu berhenti begitu tak ada slot running ->
+  // status launch baru tak pernah muncul tanpa reload manual). Interval 15 dtk
+  // saat idle, 5 dtk saat ada yang jalan.
   useEffect(() => {
-    if (!running) return undefined;
-    const id = setInterval(refresh, 5000);
+    const id = setInterval(refresh, running ? 5000 : 15000);
     return () => clearInterval(id);
   }, [running, refresh]);
 
@@ -69,7 +75,10 @@ export default function AgentsPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || res.statusText);
       if (data.state) setState(data.state);
-      if (data.config) setConfig(data.config);
+      if (data.config) {
+        setConfig(data.config);
+        setServerConfig(data.config);
+      }
       await refresh();
     } catch (e) {
       setError(String(e?.message || e));
@@ -89,12 +98,16 @@ export default function AgentsPage() {
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || res.statusText);
       if (logSlotWanted.current !== n) return;
+      setLogSize(d.size ? `${(d.size / 1024).toFixed(1)} KB` : "");
+      setLogRotated(!!d.rotated);
       setLogText(
         d.log ||
           (d.rotated ? "(log aktif masih kosong; menampilkan arsip .prev)" : "(log kosong)"),
       );
     } catch (e) {
       if (logSlotWanted.current !== n) return;
+      setLogSize("");
+      setLogRotated(false);
       setLogText(String(e?.message || e));
     }
   };
@@ -113,6 +126,9 @@ export default function AgentsPage() {
   // Clamp di UI: input "9999" sempat render ribuan input slot sebelum server
   // menolak (sanitizeConfig clamp ke 5).
   const slotCount = Math.min(5, Math.max(1, Number(config.count) || 1));
+  // Config lokal yang belum disimpan akan menimpa config server saat Launch.
+  // Tandai lebih dulu daripada diam-diam menimpa (mis.diedit di tab lain/CLI).
+  const dirty = !!serverConfig && JSON.stringify(serverConfig) !== JSON.stringify(config);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -121,9 +137,22 @@ export default function AgentsPage() {
           <h1 className="text-lg font-semibold text-text-main">Agents (headless)</h1>
           <p className="text-xs text-text-muted">
             Runner di dalam container 9router — harness: opencode / pi, status dari exit code + log.
+            Auto-refresh 5 dtk saat ada slot jalan, 15 dtk saat idle.
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {dirty && (
+            <span className="px-2 py-1 rounded-full bg-amber-500/15 text-amber-500 text-[11px] font-medium">
+              config belum disimpan
+            </span>
+          )}
+          <button
+            disabled={busy}
+            onClick={refresh}
+            className="px-3 py-1.5 rounded-md bg-surface-2 border border-border-subtle text-sm text-text-main hover:bg-surface disabled:opacity-50"
+          >
+            Refresh
+          </button>
           <button
             disabled={busy}
             onClick={() => post("/api/agents", { config })}
@@ -317,14 +346,34 @@ export default function AgentsPage() {
 
       {logSlot !== null && (
         <Card padding="md">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-semibold text-text-main">Log slot {logSlot} (tail)</h2>
-            <button
-              onClick={() => setLogSlot(null)}
-              className="px-2 py-1 rounded bg-surface-2 border border-border-subtle text-[11px] text-text-main"
-            >
-              tutup
-            </button>
+          <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+            <h2 className="text-sm font-semibold text-text-main">
+              Log slot {logSlot} (tail)
+              {logSize ? (
+                <span className="ml-2 text-[11px] font-normal text-text-muted">
+                  {logSize}
+                  {logRotated ? " · arsip .prev (log aktif kosong/baru dirotasi)" : ""}
+                </span>
+              ) : null}
+            </h2>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => showLog(logSlot)}
+                className="px-2 py-1 rounded bg-surface-2 border border-border-subtle text-[11px] text-text-main"
+              >
+                muat ulang
+              </button>
+              <button
+                onClick={() => {
+                  setLogSlot(null);
+                  setLogSize("");
+                  setLogRotated(false);
+                }}
+                className="px-2 py-1 rounded bg-surface-2 border border-border-subtle text-[11px] text-text-main"
+              >
+                tutup
+              </button>
+            </div>
           </div>
           <pre className="max-h-80 overflow-auto rounded-lg bg-black/60 text-[11px] text-emerald-300 p-3 whitespace-pre-wrap break-all">
             {logText}
