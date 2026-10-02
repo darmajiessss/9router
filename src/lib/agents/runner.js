@@ -480,7 +480,10 @@ export function bootAgents() {
       }
       const task = taskFor(cfg, s.n - 1).trim();
       if (!task) continue;
-      const fresh = spawnSlot(cfg, s.n, s.model || cfg.models[(s.n - 1) % cfg.models.length], task);
+      // Pakai loop: loopOn juga saat spawn — kalau hanya keputusannya yang pakai
+      // state.loop sementara flag LOOP wrapper masih cfg.loop, slot ter-respawn
+      // tanpa loop lalu mati setelah 1 generasi.
+      const fresh = spawnSlot({ ...cfg, loop: loopOn }, s.n, s.model || cfg.models[(s.n - 1) % cfg.models.length], task);
       Object.assign(s, fresh);
       dirty = true;
       console.log(`[agents] respawn loop slot ${s.n} pid=${s.pid}`);
