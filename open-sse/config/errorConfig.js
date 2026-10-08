@@ -6,6 +6,7 @@ export const ERROR_TYPES = {
   403: { type: "permission_error", code: "insufficient_quota" },
   404: { type: "invalid_request_error", code: "model_not_found" },
   406: { type: "invalid_request_error", code: "model_not_supported" },
+  410: { type: "invalid_request_error", code: "model_retired" },
   429: { type: "rate_limit_error", code: "rate_limit_exceeded" },
   500: { type: "server_error", code: "internal_server_error" },
   502: { type: "server_error", code: "bad_gateway" },
@@ -21,6 +22,7 @@ export const DEFAULT_ERROR_MESSAGES = {
   403: "You exceeded your current quota",
   404: "Model not found",
   406: "Model not supported",
+  410: "Model is no longer available (retired by provider)",
   429: "Rate limit exceeded",
   500: "Internal server error",
   502: "Bad gateway - upstream provider error",
@@ -45,6 +47,9 @@ export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 const COOLDOWN = {
   long: 2 * 60 * 1000,
   short: 5 * 1000,
+  // Model retirement (410 Gone / "end of life") is permanent upstream:
+  // rest long so combos skip fast instead of re-hitting a dead model.
+  eol: 30 * 24 * 60 * 60 * 1000,
 };
 
 /**
@@ -66,12 +71,15 @@ export const ERROR_RULES = [
   { text: "quota exceeded",           backoff: true },
   { text: "capacity",                 backoff: true },
   { text: "overloaded",               backoff: true },
+  { text: "end of life",              cooldownMs: COOLDOWN.eol },
+  { text: "no longer available",      cooldownMs: COOLDOWN.eol },
 
   // --- Status-based rules (fallback when text doesn't match) ---
   { status: 401, cooldownMs: COOLDOWN.long },
   { status: 402, cooldownMs: COOLDOWN.long },
   { status: 403, cooldownMs: COOLDOWN.long },
   { status: 404, cooldownMs: COOLDOWN.long },
+  { status: 410, cooldownMs: COOLDOWN.eol },
   { status: 429, backoff: true },
 ];
 
@@ -80,6 +88,7 @@ export const COOLDOWN_MS = {
   unauthorized: COOLDOWN.long,
   paymentRequired: COOLDOWN.long,
   notFound: COOLDOWN.long,
+  gone: COOLDOWN.eol,
   transient: TRANSIENT_COOLDOWN_MS,
   requestNotAllowed: COOLDOWN.short,
 };
